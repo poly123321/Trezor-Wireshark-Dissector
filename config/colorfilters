@@ -1,0 +1,8 @@
+@Trezor ERROR@trezor_dissector.thp.control == 0x42@[59345,7990,7990][65535,65535,65535]
+@Trezor Codec v1 (legacy)@trezor_dissector.codec_v1.msg_type@[65278,59578,52685][0,0,0]
+@THP Host->Trezor@trezor_dissector.thp.src_role == "Host"@[55769,60652,65535][0,0,0]
+@THP Trezor->Host@trezor_dissector.thp.src_role == "Trezor"@[57568,65535,57568][0,0,0]
+@THP Handshake@trezor_dissector.thp.control_name contains "HANDSHAKE"@[65535,63479,52685][0,0,0]
+@THP Channel Allocation@trezor_dissector.thp.control == 0x40 || trezor_dissector.thp.control == 0x41@[60909,60909,65535][0,0,0]
+@THP ACK@trezor_dissector.thp.control_name contains "ACK"@[57311,57311,57311][19018,19018,19018]
+@THP Continuation@trezor_dissector.thp.control_name == "CONTINUATION"@[61423,61423,61423][29555,29555,29555]

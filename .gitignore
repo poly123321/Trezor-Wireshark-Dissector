@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Capture artifacts — users create their own, none are committed
+*.pcap
+*.pcapng
+codec_v1_dump.txt
+*.dump
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
+
+# (pcap/pcapng handled above)
