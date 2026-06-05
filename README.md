@@ -1,6 +1,6 @@
 # Trezor Wireshark Dissector
 
-A Wireshark/`tshark` dissector for Trezor's wire protocols:
+A Wireshark/`tshark` dissector for Trezor's protocols:
 
 - **THP** (Trezor Host Protocol) — the encrypted, channel-based protocol used by **Trezor Safe 7**.
 - **Codec v1** — the legacy framing used by older devices (**Trezor Safe 5**, Trezor One, Model T, etc.).
