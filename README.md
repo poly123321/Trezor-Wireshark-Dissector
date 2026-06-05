@@ -7,8 +7,6 @@ A Wireshark/`tshark` dissector for Trezor's wire protocols:
 
 The dissector auto-detects which protocol a packet uses and decodes message types, lengths, direction (host ↔ device), and reassembles multi-packet messages. THP channels are exposed for filtering; Codec v1 messages are decoded by type and direction.
 
----
-
 ## Repository layout
 
 ```
@@ -25,6 +23,8 @@ trezor-wireshark/
 │   ├── 06_dispatch.lua
 │   └── 07_register.lua
 ├── build.sh                     # concatenates src/ → dist/trezor_dissector.lua
+├── tools/
+│   └── gen_message_names.py     # regenerate the message-name map from messages.proto
 └── config/
     └── colorfilters             # coloring rules for the Wireshark profile
 ```
@@ -62,7 +62,7 @@ The plugin only decodes frames — you still need to get Trezor traffic in front
 
 ### Option A — Trezor emulator over loopback (live capture)
 
-The Trezor emulator (from `trezor-firmware`) speaks THP/Codec v1 over **UDP on localhost, port 21324**. This is the easiest way to watch traffic live, because it needs no special capture setup — it's just UDP on the loopback interface.
+The Trezor emulator (from `trezor-firmware`) speaks THP/Codec v1 over **UDP on localhost, port 21324** (this is the built-in default in `trezorlib` and `trezord-go`, the same for everyone running a stock emulator). This is the easiest way to watch traffic live, because it needs no special capture setup — it's just UDP on the loopback interface.
 
 1. Start the emulator (e.g. `./emu.py` in `trezor-firmware/core`).
 2. In Wireshark, start a capture on the **loopback** interface:
@@ -129,13 +129,23 @@ Module responsibilities:
 | Module | Contents |
 |--------|----------|
 | `01_proto_fields.lua` | `Proto` object and all `ProtoField` definitions |
-| `02_constants.lua` | control-byte constants, Codec v1 magic, message-name maps |
+| `02_constants.lua` | control-byte constants, Codec v1 magic, message-name map (generated) |
 | `03_util.lua` | CRC32, hex helpers, direction resolution, protocol heuristics |
 | `04_thp.lua` | THP dissection (handshake, encrypted transport, errors, ping, channel allocation) |
 | `05_codec_v1.lua` | Codec v1 dissection and multi-packet reassembly |
 | `06_dispatch.lua` | the main `thp.dissector` that routes each packet to THP or Codec v1 |
 | `07_register.lua` | transport registrations (UDP 21324, USB, BLE, DLT_USER0) |
 
-To add a new Codec v1 message type, add its wire number and name to `v1_message_names` in `src/02_constants.lua`, then rebuild. Unknown types fall back to `MessageType_<n>`.
+### Message-name map
 
+The message-name map in `src/02_constants.lua` is **generated** from Trezor's `messages.proto`, not hand-maintained. The `MessageType` numbers are the shared protobuf enum used by both Codec v1 and THP, including the DebugLink messages (100+) that show up in emulator test traffic. To refresh it:
+
+```bash
+python tools/gen_message_names.py /path/to/trezor-firmware/common/protob/messages.proto --inplace
+./build.sh
+```
+
+This rewrites only the block between the `BEGIN/END GENERATED` markers in `src/02_constants.lua`; the hand-written constants in that file are left untouched.
+
+**When to regenerate:** whenever Trezor adds or changes message types in `messages.proto` (e.g. after pulling a newer `trezor-firmware`), re-run the command above and rebuild. The map is a snapshot taken at generation time — the dissector does not read `messages.proto` or the device at runtime, so new message types won't appear until someone regenerates. Missing types still decode safely as `MessageType_<n>`, so regenerating is only needed when you want the proper names.
 
