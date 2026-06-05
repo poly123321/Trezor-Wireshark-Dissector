@@ -86,7 +86,7 @@ local f_v1_remaining = ProtoField.uint32("trezor_dissector.codec_v1.remaining", 
 local f_v1_needs_continuation = ProtoField.bool("trezor_dissector.codec_v1.needs_continuation", "V1 Needs Continuation")
 local f_v1_continuation = ProtoField.bytes("trezor_dissector.codec_v1.continuation", "V1 Continuation Payload")
 
--- Direction / endpoint role (filtrovatelné)
+-- Direction / endpoint role (filterable)
 local f_direction = ProtoField.string("trezor_dissector.thp.direction", "Direction")
 local f_src_role = ProtoField.string("trezor_dissector.thp.src_role", "Source Role")
 local f_dst_role = ProtoField.string("trezor_dissector.thp.dst_role", "Destination Role")
@@ -203,7 +203,10 @@ local data_names = {
 local V1_REPORT_ID = 0x3F   -- '?'  HID report id, precedes the frame on USB HID
 local V1_MAGIC_BYTE = 0x23  -- '#'  two of these form the v1 frame magic "##"
 
--- Codec v1 message type -> name (from trezor-common messages.proto).
+-- Trezor protobuf message type -> name (from trezor-common messages.proto).
+-- These message-type numbers are shared across the wire protocols (both Codec
+-- v1 and THP carry the same MessageType enum); only the framing differs. This
+-- map is used here for the Codec v1 dissector's Info column.
 -- Only stable, verified wire numbers are listed; unknown types fall back to
 -- "MessageType_<n>". Ethereum/altcoin numbers are intentionally omitted because
 -- they shifted between firmware generations and would be ambiguous.
@@ -345,9 +348,9 @@ local function control_name(control)
     return "RESERVED"
 end
 
--- Určení směru komunikace (kdo je host, kdo Trezor).
--- Kombinuje typ zprávy (jednoznačné REQ/RES) s transportním směrem.
--- Vrací: src_role, dst_role (řetězce "Host" / "Trezor")
+-- Determine communication direction (who is host, who is Trezor).
+-- Combines message type (unambiguous REQ/RES) with transport direction.
+-- Returns: src_role, dst_role (strings "Host" / "Trezor")
 local HOST_INITIATED = {
     [CHANNEL_ALLOCATION_REQ] = true,
     [HANDSHAKE_INIT_REQ] = true,
@@ -362,31 +365,31 @@ local DEVICE_INITIATED = {
     [ERROR] = true,
 }
 
--- Per-kanál zapamatovaná identita transportní strany, která je "host".
--- Klíč = transportní src string toho, kdo poslal CHANNEL_ALLOCATION_REQ.
+-- Per-channel remembered identity of the transport side that is the "host".
+-- Key = transport src string of whoever sent CHANNEL_ALLOCATION_REQ.
 local host_transport_side = {}
 
 local function resolve_direction(pinfo, control, cid)
-    -- 1) Jednoznačné podle typu zprávy.
+    -- 1) Unambiguous by message type.
     local base_control = control
     if is_data(control) then
         base_control = base_data_control(control)
     end
 
-    -- Zapamatuj si, která transportní strana je host (poslala REQ).
+    -- Remember which transport side is the host (sent the REQ).
     local cid_key = string.format("0x%04X", cid)
     if HOST_INITIATED[control] or HOST_INITIATED[base_control] then
         host_transport_side[cid_key] = tostring(pinfo.src)
         return "Host", "Trezor"
     end
     if DEVICE_INITIATED[control] or DEVICE_INITIATED[base_control] then
-        -- odesílatel je Trezor
+        -- sender is Trezor
         host_transport_side[cid_key] = tostring(pinfo.dst)
         return "Trezor", "Host"
     end
 
-    -- 2) Obousměrné zprávy (ENCRYPTED_TRANSPORT, ACK, CONTINUATION):
-    --    odvoď z transportního směru podle zapamatovaného hosta.
+    -- 2) Bidirectional messages (ENCRYPTED_TRANSPORT, ACK, CONTINUATION):
+    --    derive from transport direction using the remembered host.
     local host_side = host_transport_side[cid_key]
     if host_side ~= nil then
         if tostring(pinfo.src) == host_side then
@@ -396,7 +399,7 @@ local function resolve_direction(pinfo, control, cid)
         end
     end
 
-    -- 3) Fallback: UDP emulátor pozná hosta podle portu (zařízení = 21324).
+    -- 3) Fallback: UDP emulator identifies the host by port (device = 21324).
     if tostring(pinfo.dst_port) == "21324" then
         return "Host", "Trezor"
     end
@@ -404,7 +407,7 @@ local function resolve_direction(pinfo, control, cid)
         return "Trezor", "Host"
     end
 
-    -- 4) Nelze určit.
+    -- 4) Cannot determine.
     return nil, nil
 end
 
@@ -1114,8 +1117,8 @@ function thp.dissector(buffer, pinfo, tree)
     subtree:add(f_cid, buffer(1, 2))
     pinfo.cols.info = string.format("%s, cid=0x%04X", name, cid)
 
-    -- Směr komunikace: přepiš Source/Destination na Host/Trezor
-    -- a přidej filtrovatelná pole (trezor_dissector.thp.direction / src_role / dst_role).
+    -- Communication direction: rewrite Source/Destination to Host/Trezor
+    -- and add filterable fields (trezor_dissector.thp.direction / src_role / dst_role).
     local src_role, dst_role = resolve_direction(pinfo, control, cid)
     if src_role ~= nil then
         pinfo.cols.src = src_role

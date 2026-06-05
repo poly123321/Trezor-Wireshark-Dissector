@@ -56,9 +56,9 @@ local function control_name(control)
     return "RESERVED"
 end
 
--- Určení směru komunikace (kdo je host, kdo Trezor).
--- Kombinuje typ zprávy (jednoznačné REQ/RES) s transportním směrem.
--- Vrací: src_role, dst_role (řetězce "Host" / "Trezor")
+-- Determine communication direction (who is host, who is Trezor).
+-- Combines message type (unambiguous REQ/RES) with transport direction.
+-- Returns: src_role, dst_role (strings "Host" / "Trezor")
 local HOST_INITIATED = {
     [CHANNEL_ALLOCATION_REQ] = true,
     [HANDSHAKE_INIT_REQ] = true,
@@ -73,31 +73,31 @@ local DEVICE_INITIATED = {
     [ERROR] = true,
 }
 
--- Per-kanál zapamatovaná identita transportní strany, která je "host".
--- Klíč = transportní src string toho, kdo poslal CHANNEL_ALLOCATION_REQ.
+-- Per-channel remembered identity of the transport side that is the "host".
+-- Key = transport src string of whoever sent CHANNEL_ALLOCATION_REQ.
 local host_transport_side = {}
 
 local function resolve_direction(pinfo, control, cid)
-    -- 1) Jednoznačné podle typu zprávy.
+    -- 1) Unambiguous by message type.
     local base_control = control
     if is_data(control) then
         base_control = base_data_control(control)
     end
 
-    -- Zapamatuj si, která transportní strana je host (poslala REQ).
+    -- Remember which transport side is the host (sent the REQ).
     local cid_key = string.format("0x%04X", cid)
     if HOST_INITIATED[control] or HOST_INITIATED[base_control] then
         host_transport_side[cid_key] = tostring(pinfo.src)
         return "Host", "Trezor"
     end
     if DEVICE_INITIATED[control] or DEVICE_INITIATED[base_control] then
-        -- odesílatel je Trezor
+        -- sender is Trezor
         host_transport_side[cid_key] = tostring(pinfo.dst)
         return "Trezor", "Host"
     end
 
-    -- 2) Obousměrné zprávy (ENCRYPTED_TRANSPORT, ACK, CONTINUATION):
-    --    odvoď z transportního směru podle zapamatovaného hosta.
+    -- 2) Bidirectional messages (ENCRYPTED_TRANSPORT, ACK, CONTINUATION):
+    --    derive from transport direction using the remembered host.
     local host_side = host_transport_side[cid_key]
     if host_side ~= nil then
         if tostring(pinfo.src) == host_side then
@@ -107,7 +107,7 @@ local function resolve_direction(pinfo, control, cid)
         end
     end
 
-    -- 3) Fallback: UDP emulátor pozná hosta podle portu (zařízení = 21324).
+    -- 3) Fallback: UDP emulator identifies the host by port (device = 21324).
     if tostring(pinfo.dst_port) == "21324" then
         return "Host", "Trezor"
     end
@@ -115,7 +115,7 @@ local function resolve_direction(pinfo, control, cid)
         return "Trezor", "Host"
     end
 
-    -- 4) Nelze určit.
+    -- 4) Cannot determine.
     return nil, nil
 end
 

@@ -75,7 +75,7 @@ local f_v1_remaining = ProtoField.uint32("trezor_dissector.codec_v1.remaining", 
 local f_v1_needs_continuation = ProtoField.bool("trezor_dissector.codec_v1.needs_continuation", "V1 Needs Continuation")
 local f_v1_continuation = ProtoField.bytes("trezor_dissector.codec_v1.continuation", "V1 Continuation Payload")
 
--- Direction / endpoint role (filtrovatelné)
+-- Direction / endpoint role (filterable)
 local f_direction = ProtoField.string("trezor_dissector.thp.direction", "Direction")
 local f_src_role = ProtoField.string("trezor_dissector.thp.src_role", "Source Role")
 local f_dst_role = ProtoField.string("trezor_dissector.thp.dst_role", "Destination Role")

@@ -40,8 +40,8 @@ function thp.dissector(buffer, pinfo, tree)
     subtree:add(f_cid, buffer(1, 2))
     pinfo.cols.info = string.format("%s, cid=0x%04X", name, cid)
 
-    -- Směr komunikace: přepiš Source/Destination na Host/Trezor
-    -- a přidej filtrovatelná pole (trezor_dissector.thp.direction / src_role / dst_role).
+    -- Communication direction: rewrite Source/Destination to Host/Trezor
+    -- and add filterable fields (trezor_dissector.thp.direction / src_role / dst_role).
     local src_role, dst_role = resolve_direction(pinfo, control, cid)
     if src_role ~= nil then
         pinfo.cols.src = src_role
