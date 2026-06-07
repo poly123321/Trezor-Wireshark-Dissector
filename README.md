@@ -46,7 +46,7 @@ Copy `dist/trezor_dissector.lua` into your Wireshark **personal plugins** folder
 
 You can confirm the exact path in Wireshark under **Help → About Wireshark → Folders → Personal Lua Plugins**.
 
-Then restart Wireshark, or press **Analyze → Reload Lua Plugins** (`Ctrl/Cmd+Shift+L`).
+Then restart Wireshark, or press **Analyze → Reload Lua Plugins**.
 
 Verify it loaded under **Help → About Wireshark → Plugins** — you should see `trezor_dissector.lua` listed.
 
@@ -98,7 +98,7 @@ A `DLT_USER0` pcap (from B2) carries raw frames Wireshark can't attribute on its
 
 Map it once:
 
-1. **Wireshark → Preferences** (`Cmd/Ctrl+,`) → **Protocols → DLT_USER → Edit…**
+1. **Wireshark → Preferences** → **Protocols → DLT_USER → Edit…**
 2. Add an entry:
    - **DLT** = `User 0 (DLT=147)`
    - **Payload protocol** = `trezor_dissector`
