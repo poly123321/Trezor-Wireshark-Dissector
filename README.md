@@ -67,10 +67,20 @@ The Trezor emulator (from `trezor-firmware`) speaks THP/Codec v1 over **UDP on l
 1. Start the emulator (e.g. `./emu.py` in `trezor-firmware/core`).
 2. In Wireshark, start a capture on the **loopback** interface:
    - macOS / Linux: the interface is usually called `lo` or `lo0`.
-3. Apply a capture or display filter to cut the noise: `udp.port == 21324`.
+3. Apply a capture or display filter to cut the noise: `udp.port == 21324` or generally `trezor_dissector`.
 4. Drive the emulator with `trezorctl` or your own script. The frames appear live, and the **Protocol** column shows `THP` or `Codec v1`.
 
-The dissector is registered on UDP port 21324 automatically, so no manual setup is required for this path.
+The dissector is registered on UDP port 21324 automatically, so no manual setup is required for the stock emulator.
+
+#### Running emulators on other ports (or several at once)
+
+The UDP port is **configurable**, which matters when you run multiple emulators concurrently (e.g. parallel device tests), each on its own port. Set the port(s) under **Wireshark → Preferences → Protocols → Trezor Wire Dissector → "Emulator UDP port(s)"**. The field accepts:
+
+- a single port — `21324`
+- a range — `21324-21400`
+- a comma-separated list — `21324,21326,21328`
+
+The dissector decodes traffic on every port in that set, and it re-registers immediately when you change the value.
 
 ### Option B — Physical device (build your own pcap)
 
@@ -148,4 +158,3 @@ python tools/gen_message_names.py /path/to/trezor-firmware/common/protob/message
 This rewrites only the block between the `BEGIN/END GENERATED` markers in `src/02_constants.lua`; the hand-written constants in that file are left untouched.
 
 **When to regenerate:** whenever Trezor adds or changes message types in `messages.proto` (e.g. after pulling a newer `trezor-firmware`), re-run the command above and rebuild. The map is a snapshot taken at generation time — the dissector does not read `messages.proto` or the device at runtime, so new message types won't appear until someone regenerates. Missing types still decode safely as `MessageType_<n>`, so regenerating is only needed when you want the proper names.
-

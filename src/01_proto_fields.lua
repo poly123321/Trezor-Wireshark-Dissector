@@ -16,7 +16,12 @@
 
 local thp = Proto("trezor_dissector", "Trezor Wire Dissector (THP / Codec v1)")
 
--- Basic fields
+-- Configurable UDP port range for the emulator(s). Default is just 21324, the
+-- stock emulator port. Change it under Edit > Preferences > Protocols > trezor_dissector.
+thp.prefs.udp_ports = Pref.string("Emulator UDP port(s)", "21324",
+    "UDP port or range the Trezor emulator(s) use, e.g. 21324 or 21324-21400")
+
+    -- Basic fields
 local f_control = ProtoField.uint8("trezor_dissector.thp.control", "Control Byte", base.HEX)
 local f_control_name = ProtoField.string("trezor_dissector.thp.control_name", "Control Name")
 local f_cid = ProtoField.uint16("trezor_dissector.thp.cid", "Channel ID", base.HEX)

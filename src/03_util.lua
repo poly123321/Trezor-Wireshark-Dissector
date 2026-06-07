@@ -77,6 +77,22 @@ local DEVICE_INITIATED = {
 -- Key = transport src string of whoever sent CHANNEL_ALLOCATION_REQ.
 local host_transport_side = {}
 
+-- True if `port` falls within the emulator port spec ("21324", "21324-21400",
+-- "21324,21326"). Kept here so the direction heuristic and registration agree.
+local function port_in_spec(port, spec)
+    if port == nil or spec == nil then return false end
+    for part in tostring(spec):gmatch("[^,]+") do
+        part = part:gsub("%s", "")
+        local lo, hi = part:match("^(%d+)%-(%d+)$")
+        if lo ~= nil then
+            if port >= tonumber(lo) and port <= tonumber(hi) then return true end
+        elseif part:match("^(%d+)$") ~= nil then
+            if port == tonumber(part) then return true end
+        end
+    end
+    return false
+end
+
 local function resolve_direction(pinfo, control, cid)
     -- 1) Unambiguous by message type.
     local base_control = control
@@ -107,11 +123,10 @@ local function resolve_direction(pinfo, control, cid)
         end
     end
 
-    -- 3) Fallback: UDP emulator identifies the host by port (device = 21324).
-    if tostring(pinfo.dst_port) == "21324" then
+    if port_in_spec(tonumber(tostring(pinfo.dst_port)), thp.prefs.udp_ports) then
         return "Host", "Trezor"
     end
-    if tostring(pinfo.src_port) == "21324" then
+    if port_in_spec(tonumber(tostring(pinfo.src_port)), thp.prefs.udp_ports) then
         return "Trezor", "Host"
     end
 

@@ -1,16 +1,49 @@
 -- 07_register.lua — transport registrations (UDP, USB, BLE, DLT_USER0).
 -- Part of the trezor_dissector Wireshark plugin. Edit here, then run ../build.sh
---
--- =====================================================================
--- CHANGE C: multi-transport registration.
--- The per-transport wrappers set thp_packet_size before dissecting,
--- so reassembly math uses the correct packet size for each layer.
--- =====================================================================
 
--- UDP emulator (port 21324), packet size 64.
+
+-- UDP emulator, packet size 64. The port(s) come from the configurable
+-- preference (default 21324). We register the whole configured range, and
+-- re-register whenever the user changes the preference. We also keep the UDP
+-- heuristic as a fallback so traffic on an unconfigured port can still match.
 local udp_table = DissectorTable.get("udp.port")
-udp_table:add(21324, thp)
+local registered_udp_ports = {}
+
+-- Parse "21324" or "21324-21400" or "21324,21326" into a list of port numbers.
+local function parse_ports(spec)
+    local ports = {}
+    if spec == nil then return ports end
+    for part in tostring(spec):gmatch("[^,]+") do
+        part = part:gsub("%s", "")
+        local lo, hi = part:match("^(%d+)%-(%d+)$")
+        if lo ~= nil then
+            for p = tonumber(lo), tonumber(hi) do ports[#ports + 1] = p end
+        else
+            local single = part:match("^(%d+)$")
+            if single ~= nil then ports[#ports + 1] = tonumber(single) end
+        end
+    end
+    return ports
+end
+
+local function register_udp_ports()
+    -- Unregister previously added ports.
+    for _, p in ipairs(registered_udp_ports) do
+        udp_table:remove(p, thp)
+    end
+    registered_udp_ports = parse_ports(thp.prefs.udp_ports)
+    for _, p in ipairs(registered_udp_ports) do
+        udp_table:add(p, thp)
+    end
+end
+
+register_udp_ports()
 thp:register_heuristic("udp", thp.dissector)
+
+-- Re-register when the user changes the port preference.
+function thp.prefs_changed()
+    register_udp_ports()
+end
 
 -- DLT_USER0 (link-layer type 147): synthetic pcaps that carry raw Trezor
 -- frames from byte 0 with no transport wrapper (e.g. produced by
