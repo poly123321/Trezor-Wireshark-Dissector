@@ -1282,6 +1282,22 @@ local function v1_direction_key(pinfo)
            "/v1"
 end
 
+-- Per-packet record of "this packet was dissected as a v1 continuation",
+-- keyed by frame number so it survives Wireshark's multiple dissection
+-- passes (the transient v1_reassembly_state does not).
+local v1_is_cont_frame = {}
+
+local function v1_reassembly_in_progress(pinfo)
+    -- On the first pass, decide from live reassembly state and remember it.
+    -- On later passes, trust the remembered decision.
+    if v1_is_cont_frame[pinfo.number] ~= nil then
+        return v1_is_cont_frame[pinfo.number]
+    end
+    local in_progress = v1_reassembly_state[v1_direction_key(pinfo)] ~= nil
+    v1_is_cont_frame[pinfo.number] = in_progress
+    return in_progress
+end
+
 local function dissect_v1(buffer, pinfo, tree)
     local packet_len = buffer:len()
     pinfo.cols.protocol = "Codec v1"
@@ -1361,8 +1377,15 @@ local function dissect_v1(buffer, pinfo, tree)
         return packet_len
     end
 
-    -- Continuation packet.
-    local is_cont, coff = v1_is_continuation_packet(buffer)
+    -- Continuation packet. Recognized by reassembly STATE (decided in the
+    -- dispatcher and remembered per-frame), NOT by data bytes — continuation
+    -- data can start with any byte, including 0x23, so content-based detection
+    -- was unreliable. The data offset still depends on the optional report id.
+    local is_cont = v1_reassembly_in_progress(pinfo)
+    local coff = 0
+    if buffer:len() >= 1 and buffer(0, 1):uint() == V1_REPORT_ID then
+        coff = 1
+    end
     if is_cont then
         if coff == 1 then
             subtree:add(f_v1_report_id, buffer(0, 1))
@@ -1428,20 +1451,24 @@ end
 function thp.dissector(buffer, pinfo, tree)
     local packet_len = buffer:len()
 
-    -- Codec v1 (legacy) takes precedence: detect the "##" magic (optionally
-    -- preceded by the 0x3F HID report id) before THP control-byte parsing.
-    -- This covers both first packets ("[3F] 23 23 ...") and continuation
-    -- packets ("3F <data>") so legacy reassembly never falls into THP parsing.
+    -- 1) First packet of a v1 message: "[3F] 23 23 ..." — detectable by content.
     if looks_like_v1(buffer) then
         return dissect_v1(buffer, pinfo, tree)
     end
-    if buffer:len() >= 2 and buffer(0, 1):uint() == V1_REPORT_ID then
-        local cont, _ = v1_is_continuation_packet(buffer)
-        if cont then
-            return dissect_v1(buffer, pinfo, tree)
-        end
+    -- 2) v1 continuation packet: "3F <data>". A continuation has no magic and
+    -- its data can start with ANY byte (including 0x23), so we cannot tell it
+    -- apart by content. Instead we key off reassembly STATE: if a v1 message is
+    -- mid-reassembly for this direction, a 0x3F packet here is its continuation.
+    if buffer:len() >= 1 and buffer(0, 1):uint() == V1_REPORT_ID
+        and v1_reassembly_in_progress(pinfo) then
+        return dissect_v1(buffer, pinfo, tree)
     end
-
+    -- 3) Anything still starting with 0x3F is ours (v1), never THP: 0x3F is the
+    -- v1 HID report id, not a THP control byte. Guard against it leaking into
+    -- the THP parser (which would misread it as control/cid/length).
+    if buffer:len() >= 1 and buffer(0, 1):uint() == V1_REPORT_ID then
+        return dissect_v1(buffer, pinfo, tree)
+    end
     if not looks_like_thp(buffer) then
         return 0
     end
