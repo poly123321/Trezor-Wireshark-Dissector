@@ -320,9 +320,36 @@ local function dissect_allocation_response(subtree, buffer, data_offset, data_cr
         subtree:add(f_allocated_cid, buffer(data_offset + 8, 2))
     end
 
-    local device_props_len = data_crc_len - 10 - 4
+local device_props_len = data_crc_len - 10 - 4
     if device_props_len > 0 and packet_len >= data_offset + 10 + device_props_len then
-        subtree:add(f_device_properties, buffer(data_offset + 10, device_props_len))
+        local dp_range = buffer(data_offset + 10, device_props_len)
+        local dp_tree = subtree:add(f_device_properties, dp_range)
+
+        -- Parse the ThpDeviceProperties protobuf so the model, protocol version
+        -- and pairing methods are readable instead of raw bytes.
+        local raw = range_to_raw(buffer, data_offset + 10, device_props_len)
+        local dp = parse_device_properties(raw)
+
+        if dp.internal_model ~= nil then
+            dp_tree:add(dp_range, "Internal Model: " .. dp.internal_model):set_generated()
+        end
+        if dp.model_variant ~= nil then
+            dp_tree:add(dp_range, string.format("Model Variant: %d", dp.model_variant)):set_generated()
+        end
+        if dp.protocol_version_major ~= nil or dp.protocol_version_minor ~= nil then
+            dp_tree:add(dp_range, string.format("Protocol Version: %d.%d",
+                dp.protocol_version_major or 0, dp.protocol_version_minor or 0)):set_generated()
+        end
+        if #dp.pairing_methods > 0 then
+            local names = {}
+            for _, m in ipairs(dp.pairing_methods) do
+                names[#names + 1] = string.format("%s(%d)", PAIRING_METHOD_NAMES[m] or "Unknown", m)
+            end
+            dp_tree:add(dp_range, "Pairing Methods: " .. table.concat(names, ", ")):set_generated()
+        end
+        for _, w in ipairs(dp.warnings) do
+            dp_tree:add(dp_range, "Warning: " .. w):set_generated()
+        end
     end
 
     if data_crc_len >= 4 and packet_len >= data_offset + data_crc_len then

@@ -28,9 +28,7 @@
 local thp = Proto("trezor_dissector", "Trezor Wire Dissector (THP / Codec v1)")
 
 -- Configurable UDP port range for the emulator(s). Default is just 21324, the
--- stock emulator port. Trezor's test infra spawns multiple emulators on
--- consecutive ports, so a range covers running several at
--- once. Change it under Edit > Preferences > Protocols > trezor_dissector.
+-- stock emulator port. Change it under Edit > Preferences > Protocols > trezor_dissector.
 thp.prefs.udp_ports = Pref.string("Emulator UDP port(s)", "21324",
     "UDP port or range the Trezor emulator(s) use, e.g. 21324 or 21324-21400")
 
@@ -791,6 +789,70 @@ local function read_u32_be_from_bytes(bytes, offset_1_based)
     return b1 * 0x1000000 + b2 * 0x10000 + b3 * 0x100 + b4
 end
 
+-- THP pairing method names (from ThpPairingMethod enum in the spec).
+local PAIRING_METHOD_NAMES = {
+    [1] = "SkipPairing",
+    [2] = "CodeEntry",
+    [3] = "QrCode",
+    [4] = "NFC",
+}
+
+-- Read a base-128 varint from byte-string `s` at 1-based index `i`.
+-- Returns value (integer), next_index.
+local function pb_read_varint(s, i)
+    local result = 0
+    local shift = 0
+    while i <= #s do
+        local b = string.byte(s, i)
+        i = i + 1
+        result = result + (b % 128) * (2 ^ shift)
+        if b < 128 then return math.floor(result), i end
+        shift = shift + 7
+        if shift > 63 then return math.floor(result), i end
+    end
+    return math.floor(result), i
+end
+
+-- Parse a serialized ThpDeviceProperties protobuf (from ChannelAllocationResponse).
+-- Returns a table: internal_model, model_variant, protocol_version_major/minor,
+-- pairing_methods (list of numbers), warnings (list of strings).
+local function parse_device_properties(s)
+    local out = { pairing_methods = {}, warnings = {} }
+    local i = 1
+    while i <= #s do
+        local tag
+        tag, i = pb_read_varint(s, i)
+        local field_no = math.floor(tag / 8)
+        local wire_type = tag % 8
+        if wire_type == 0 then
+            local v
+            v, i = pb_read_varint(s, i)
+            if field_no == 2 then out.model_variant = v
+            elseif field_no == 3 then out.protocol_version_major = v
+            elseif field_no == 4 then out.protocol_version_minor = v
+            elseif field_no == 5 then out.pairing_methods[#out.pairing_methods + 1] = v
+            else out.warnings[#out.warnings + 1] = string.format("unknown varint field %d", field_no) end
+        elseif wire_type == 2 then
+            local len
+            len, i = pb_read_varint(s, i)
+            local chunk = string.sub(s, i, i + len - 1)
+            i = i + len
+            if field_no == 1 then out.internal_model = chunk
+            elseif field_no == 5 then
+                local j = 1
+                while j <= #chunk do
+                    local v; v, j = pb_read_varint(chunk, j)
+                    out.pairing_methods[#out.pairing_methods + 1] = v
+                end
+            else out.warnings[#out.warnings + 1] = string.format("unknown field %d (%d bytes)", field_no, len) end
+        else
+            out.warnings[#out.warnings + 1] = string.format("unsupported wire type %d (field %d)", wire_type, field_no)
+            break
+        end
+    end
+    return out
+end
+
 local function concat_chunks(chunks)
     local out = ""
     for _, chunk in ipairs(chunks) do
@@ -1123,9 +1185,36 @@ local function dissect_allocation_response(subtree, buffer, data_offset, data_cr
         subtree:add(f_allocated_cid, buffer(data_offset + 8, 2))
     end
 
-    local device_props_len = data_crc_len - 10 - 4
+local device_props_len = data_crc_len - 10 - 4
     if device_props_len > 0 and packet_len >= data_offset + 10 + device_props_len then
-        subtree:add(f_device_properties, buffer(data_offset + 10, device_props_len))
+        local dp_range = buffer(data_offset + 10, device_props_len)
+        local dp_tree = subtree:add(f_device_properties, dp_range)
+
+        -- Parse the ThpDeviceProperties protobuf so the model, protocol version
+        -- and pairing methods are readable instead of raw bytes.
+        local raw = range_to_raw(buffer, data_offset + 10, device_props_len)
+        local dp = parse_device_properties(raw)
+
+        if dp.internal_model ~= nil then
+            dp_tree:add(dp_range, "Internal Model: " .. dp.internal_model):set_generated()
+        end
+        if dp.model_variant ~= nil then
+            dp_tree:add(dp_range, string.format("Model Variant: %d", dp.model_variant)):set_generated()
+        end
+        if dp.protocol_version_major ~= nil or dp.protocol_version_minor ~= nil then
+            dp_tree:add(dp_range, string.format("Protocol Version: %d.%d",
+                dp.protocol_version_major or 0, dp.protocol_version_minor or 0)):set_generated()
+        end
+        if #dp.pairing_methods > 0 then
+            local names = {}
+            for _, m in ipairs(dp.pairing_methods) do
+                names[#names + 1] = string.format("%s(%d)", PAIRING_METHOD_NAMES[m] or "Unknown", m)
+            end
+            dp_tree:add(dp_range, "Pairing Methods: " .. table.concat(names, ", ")):set_generated()
+        end
+        for _, w in ipairs(dp.warnings) do
+            dp_tree:add(dp_range, "Warning: " .. w):set_generated()
+        end
     end
 
     if data_crc_len >= 4 and packet_len >= data_offset + data_crc_len then
@@ -1679,12 +1768,7 @@ end
 -- ===================================================================
 -- 07_register.lua — transport registrations (UDP, USB, BLE, DLT_USER0).
 -- Part of the trezor_dissector Wireshark plugin. Edit here, then run ../build.sh
---
--- =====================================================================
--- CHANGE C: multi-transport registration.
--- The per-transport wrappers set thp_packet_size before dissecting,
--- so reassembly math uses the correct packet size for each layer.
--- =====================================================================
+
 
 -- UDP emulator, packet size 64. The port(s) come from the configurable
 -- preference (default 21324). We register the whole configured range, and
@@ -1730,8 +1814,8 @@ function thp.prefs_changed()
 end
 
 -- DLT_USER0 (link-layer type 147): synthetic pcaps that carry raw Trezor
--- frames from byte 0 with no transport wrapper (e.g. produced by
--- capture_codec_v1.py via trezorlib chunk hooks). Packet size 64 (USB/HID).
+-- frames from byte 0 with no transport wrapper (produced by an external
+-- trezorlib chunk-hook capture script). Packet size 64 (USB/HID).
 -- Registering here lets "trezor_dissector" decode User 0 frames. Depending on
 -- the Wireshark version you may still need to map it once under
 -- Edit > Preferences > Protocols > DLT_USER (User 0 -> trezor_dissector).

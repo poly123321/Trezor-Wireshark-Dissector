@@ -46,8 +46,8 @@ function thp.prefs_changed()
 end
 
 -- DLT_USER0 (link-layer type 147): synthetic pcaps that carry raw Trezor
--- frames from byte 0 with no transport wrapper (e.g. produced by
--- capture_codec_v1.py via trezorlib chunk hooks). Packet size 64 (USB/HID).
+-- frames from byte 0 with no transport wrapper (produced by an external
+-- trezorlib chunk-hook capture script). Packet size 64 (USB/HID).
 -- Registering here lets "trezor_dissector" decode User 0 frames. Depending on
 -- the Wireshark version you may still need to map it once under
 -- Edit > Preferences > Protocols > DLT_USER (User 0 -> trezor_dissector).
