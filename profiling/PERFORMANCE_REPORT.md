@@ -81,6 +81,60 @@ measured consistently. **Wall-clock spans on HW therefore include DebugLink cost
 the per-message signing-loop timings do not** (they are computed from specific
 transitions DebugLink is not part of).
 
+### THP synchronization markers
+
+THP synchronization markers can be added as temporary instrumentation directly in
+`trezor-firmware` device tests. They are useful for marking coarse stages of an
+encrypted THP capture, because THP `PING`/`PONG` payloads are not encrypted.
+
+Edit:
+
+```sh
+tests/device_tests/bitcoin/test_signtx.py
+```
+
+Add this helper above the profiled tests:
+
+```python
+def _thp_marker(session, marker: bytes) -> None:
+    """Send an unencrypted THP PING/PONG marker visible in packet captures."""
+    client = getattr(session, "client", None)
+    channel = getattr(client, "channel", None)
+
+    if channel is None:
+        return
+
+    channel.send_marker(marker)
+```
+
+Then wrap the signing call in the selected test:
+
+```python
+_thp_marker(session, b"OUTS_BEG")
+_, serialized_tx = btc.sign_tx(
+    session, "Testnet", inputs, outputs, prev_txes=TX_CACHE_TESTNET
+)
+_thp_marker(session, b"OUTS_END")
+```
+
+For `test_lots_of_inputs`, use analogous markers:
+
+```python
+_thp_marker(session, b"INPS_BEG")
+_, serialized_tx = btc.sign_tx(
+    session, "Testnet", inputs, [out], prev_txes=TX_CACHE_TESTNET
+)
+_thp_marker(session, b"INPS_END")
+```
+
+Each marker must be exactly 8 bytes. The marker is sent as a THP-level
+`PING` and echoed back as `PONG`, so it creates a visible synchronization point
+without decrypting `ENCRYPTED_TRANSPORT`.
+
+These markers delimit coarse-grained stages, such as start/end of the signing
+flow. They do not reveal individual encrypted application messages such as
+`TxRequest`, `TxAck`, or `ButtonRequest`.
+
 PCAP samples: `btc_outputs_ts{5,7}.pcapng` (emu), `hw_{inputs,outputs}_ts{5,7}.pcapng` (HW).
 
 ---
