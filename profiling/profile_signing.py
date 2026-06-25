@@ -14,7 +14,7 @@ frame.number | frame.time_epoch | <name> | <type_or_cid> | <length> | udp.srcpor
 For Codec v1 export <name>=codec_v1.msg_name, <type_or_cid>=codec_v1.msg_type (decimal).
 For THP export      <name>=thp.control_name, <type_or_cid>=thp.cid (e.g. 0x81f7, 0xFFFF).
 """
-import sys, csv, statistics
+import sys, csv, statistics, re
 from collections import defaultdict
 
 DEVICE_PORT = "21324"
@@ -37,6 +37,12 @@ def load(path):
                 ln = int(length) if length else None
             except ValueError:
                 ln = None
+            
+            # USB captures put a direction string in the src column
+            # ("Host->Trezor" / "Trezor->Host") instead of UDP ports.
+            direction_str = None
+            if src in ("Host->Trezor", "Trezor->Host"):
+                direction_str = src
             rows.append({
                 "frame": int(frame) if frame else None,
                 "t": t,
@@ -44,10 +50,18 @@ def load(path):
                 "cid": type_or_cid or None,   # decimal type (v1) or hex cid (THP), kept as string
                 "len": ln,
                 "src": src, "dst": dst,
+                "dir": direction_str,
             })
     return rows
 
 def direction(row):
+    # USB capture: explicit direction string takes precedence
+    d = row.get("dir")
+    if d == "Host->Trezor":
+        return "host->device"
+    if d == "Trezor->Host":
+        return "device->host"
+    # UDP/emulator capture: infer from ports
     if row["dst"] == DEVICE_PORT:
         return "host->device"
     if row["src"] == DEVICE_PORT:
@@ -119,30 +133,47 @@ def main():
     print()
 
     if thp_mode:
-        # --- THP ACK latency: data frame (device->host or host->device) -> its ACK back ---
-        # ACK travels in opposite direction of the data frame it acknowledges.
-        # Heuristic: for each ENCRYPTED_TRANSPORT, find the next ACK0/ACK1 in the
-        # opposite direction on the same cid.
+        # --- THP ACK latency: data frame (seq bit N) -> its ACK (ACK{N}) ---
+        # THP uses an alternating-bit protocol: a data frame carrying "seqN" is
+        # acknowledged by "ACKN" on the same channel. Pair by seq/ack number
+        # (from full_name) rather than by direction, since on USB captures data
+        # and ACK do not follow the clean opposite-direction pattern that UDP does.
         print("--- THP ACK round-trip latency ---")
+        import re as _re
+
+        def seq_of(m):
+            # extract seq bit from full_name, e.g. "ENCRYPTED_TRANSPORT seq0 ack1" -> 0
+            fn = m.get("full_name") or ""
+            mt = _re.search(r"seq([01])", fn)
+            return mt.group(1) if mt else None
+
+        def ack_num(m):
+            # "ACK0" -> "0", "ACK1" -> "1"
+            if m["name"] == "ACK0":
+                return "0"
+            if m["name"] == "ACK1":
+                return "1"
+            return None
+
         acks = []
-        # index ACKs by (cid, direction, time)
         for i, a in enumerate(msgs):
             if a["name"] != "ENCRYPTED_TRANSPORT":
                 continue
-            da = direction(a)
-            # search forward for first ACK in opposite direction, same cid
-            for b in msgs[i+1:i+8]:
-                if b["name"] in ("ACK0", "ACK1") and b["cid"] == a["cid"] \
-                   and direction(b) != da and direction(b) != "?":
+            s = seq_of(a)
+            if s is None:
+                continue
+            # search forward for the first ACK with matching number on the same cid
+            for b in msgs[i + 1 : i + 12]:
+                if ack_num(b) == s and b["cid"] == a["cid"]:
                     acks.append(b["t"] - a["t"])
                     break
         if acks:
-            print(f"ENCRYPTED_TRANSPORT -> ACK: n={len(acks)} "
+            print(f"ENCRYPTED_TRANSPORT(seqN) -> ACKN: n={len(acks)} "
                   f"mean={statistics.mean(acks)*1000:.2f}ms "
                   f"median={statistics.median(acks)*1000:.2f}ms "
                   f"min={min(acks)*1000:.2f}ms max={max(acks)*1000:.2f}ms")
         else:
-            print("(no ENCRYPTED_TRANSPORT->ACK pairs matched)")
+            print("(no ENCRYPTED_TRANSPORT(seqN)->ACKN pairs matched)")
         print()
     else:
         # --- Codec v1 signing-loop focus ---
