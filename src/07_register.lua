@@ -43,6 +43,9 @@ thp:register_heuristic("udp", thp.dissector)
 -- Re-register when the user changes the port preference.
 function thp.prefs_changed()
     register_udp_ports()
+    if reset_thp_decryption_state ~= nil then
+        reset_thp_decryption_state()
+    end
 end
 
 -- DLT_USER0 (link-layer type 147): synthetic pcaps that carry raw Trezor
