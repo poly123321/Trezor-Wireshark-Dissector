@@ -320,6 +320,114 @@ local function parse_device_properties(s)
     return out
 end
 
+
+-- ======================================================================
+-- Recursive protobuf field formatter for decrypted application messages.
+-- Reads the generated pb_message_fields / pb_enums tables (02_constants.lua)
+-- and turns a serialized protobuf into a tree of "name: value" lines, naming
+-- fields and translating enums. Nested messages recurse (depth-limited).
+-- ======================================================================
+
+local PB_MAX_DEPTH = 6
+
+local function pb_parse_fields(s)
+    local fields = {}
+    local i = 1
+    while i <= #s do
+        local tag
+        tag, i = pb_read_varint(s, i)
+        local field_no = math.floor(tag / 8)
+        local wire_type = tag % 8
+        if wire_type == 0 then
+            local v
+            v, i = pb_read_varint(s, i)
+            fields[#fields + 1] = { field_no = field_no, wire_type = 0, varint = v }
+        elseif wire_type == 2 then
+            local len
+            len, i = pb_read_varint(s, i)
+            local chunk = string.sub(s, i, i + len - 1)
+            i = i + len
+            fields[#fields + 1] = { field_no = field_no, wire_type = 2, chunk = chunk, len = len }
+        elseif wire_type == 1 then
+            fields[#fields + 1] = { field_no = field_no, wire_type = 1, chunk = string.sub(s, i, i + 7), len = 8 }
+            i = i + 8
+        elseif wire_type == 5 then
+            fields[#fields + 1] = { field_no = field_no, wire_type = 5, chunk = string.sub(s, i, i + 3), len = 4 }
+            i = i + 4
+        else
+            fields[#fields + 1] = { field_no = field_no, wire_type = wire_type, unsupported = true }
+            break
+        end
+    end
+    return fields
+end
+
+local function pb_hex(s)
+    return (s:gsub('.', function(c) return string.format('%02x', string.byte(c)) end))
+end
+
+local function pb_printable(s)
+    if #s == 0 then return false end
+    for k = 1, #s do
+        local b = string.byte(s, k)
+        if b < 0x20 or b > 0x7e then return false end
+    end
+    return true
+end
+
+local function pb_format_varint(v, enum_name)
+    if enum_name and pb_enums[enum_name] then
+        local n = pb_enums[enum_name][v]
+        if n then
+            return string.format("%s (%d)", n, v)
+        end
+    end
+    return string.format("%d", v)
+end
+
+local function pb_format_into(out, msg_name, s, depth)
+    if depth > PB_MAX_DEPTH then
+        out[#out + 1] = { text = "(max depth reached)", depth = depth }
+        return
+    end
+    local fieldmap = pb_message_fields[msg_name]
+    for _, f in ipairs(pb_parse_fields(s)) do
+        if f.unsupported then
+            out[#out + 1] = { text = string.format("field %d: (unsupported wire type %d)", f.field_no, f.wire_type), depth = depth }
+        else
+            local meta = fieldmap and fieldmap[f.field_no] or nil
+            local fname = meta and meta.name or string.format("field %d", f.field_no)
+            if f.wire_type == 0 then
+                local enum_name = meta and meta.enum or nil
+                out[#out + 1] = { text = string.format("%s: %s", fname, pb_format_varint(f.varint, enum_name)), depth = depth }
+            elseif f.wire_type == 2 then
+                if meta and meta.msg and pb_message_fields[meta.msg] then
+                    out[#out + 1] = { text = string.format("%s: (%s)", fname, meta.msg), depth = depth }
+                    pb_format_into(out, meta.msg, f.chunk, depth + 1)
+                elseif pb_printable(f.chunk) then
+                    out[#out + 1] = { text = string.format("%s: \"%s\"", fname, f.chunk), depth = depth }
+                elseif f.len <= 32 then
+                    out[#out + 1] = { text = string.format("%s: %s", fname, pb_hex(f.chunk)), depth = depth }
+                else
+                    out[#out + 1] = { text = string.format("%s: bytes[%d] %s...", fname, f.len, pb_hex(string.sub(f.chunk, 1, 16))), depth = depth }
+                end
+            elseif f.wire_type == 1 then
+                out[#out + 1] = { text = string.format("%s: fixed64 %s", fname, pb_hex(f.chunk)), depth = depth }
+            elseif f.wire_type == 5 then
+                out[#out + 1] = { text = string.format("%s: fixed32 %s", fname, pb_hex(f.chunk)), depth = depth }
+            end
+        end
+    end
+end
+
+local function pb_format_message(msg_name, s)
+    local out = {}
+    if #s == 0 then return out end
+    pb_format_into(out, msg_name, s, 0)
+    return out
+end
+
+
 local function concat_chunks(chunks)
     local out = ""
     for _, chunk in ipairs(chunks) do

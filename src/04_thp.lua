@@ -392,7 +392,23 @@ local function add_decrypted_thp_message(dec, pt_tvb, plaintext_len, pinfo)
     dec:add(f_encrypted_msg_name, pt_tvb(1, 2), msg_name):set_generated()
 
     if payload_len > 0 then
-        dec:add(f_encrypted_protobuf_payload, pt_tvb(3, payload_len))
+        local pb_tree = dec:add(f_encrypted_protobuf_payload, pt_tvb(3, payload_len))
+        -- Parse the protobuf payload into named fields using the generated
+        -- pb_message_fields / pb_enums tables. Nested messages are shown as
+        -- indented subtrees (depth-limited inside pb_format_message).
+        local ok, lines = pcall(function()
+            local raw = range_to_raw(pt_tvb, 3, payload_len)
+            return pb_format_message(msg_name, raw)
+        end)
+        if ok and lines then
+            local stack = { [0] = pb_tree }
+            for _, ln in ipairs(lines) do
+                local parent = stack[ln.depth] or pb_tree
+                local node = parent:add(pt_tvb(3, payload_len), ln.text)
+                node:set_generated()
+                stack[ln.depth + 1] = node
+            end
+        end
     else
         dec:add(pt_tvb(0, 0), "Decrypted Protobuf Payload: empty"):set_generated()
     end

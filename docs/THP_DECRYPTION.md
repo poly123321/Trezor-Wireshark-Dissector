@@ -30,6 +30,13 @@ Instead of an opaque ciphertext blob you see the actual application messages:
 `SignTx`, `TxRequest`, `TxAck`, `ButtonRequest`, `ButtonAck`, `GetFeatures`,
 `Features`, `ThpPairingRequest`, and so on.
 
+The protobuf payload is further decoded into named fields, with enum values
+translated and nested messages expanded as a subtree. For example a decrypted
+`TxRequest` shows `request_type: TXINPUT (0)` and its nested `details`
+sub-fields, rather than raw bytes. Field and enum names are generated from the
+`.proto` definitions (see below), so all message types are covered; unknown or
+unrecognised fields fall back to a generic `field N: <value>` dump.
+
 ---
 
 ## 1. Install the dissector
@@ -141,9 +148,31 @@ To decrypt an `ENCRYPTED_TRANSPORT` frame the dissector:
 
 ## Limitations
 
-- **Inner protobuf fields are not parsed** - you get the message name and the
-  raw protobuf payload, but not the individual fields within it.
+- **Field names come from generated tables.** They are produced from the
+  `.proto` files (see "Regenerating field maps"); if the firmware's protocol
+  changes, regenerate so new or renamed fields show correctly. Unknown fields
+  still render generically.
+- **Nested messages are expanded depth-first up to a fixed depth.** Extremely
+  deep structures are truncated with a `(max depth reached)` marker.
 - **Keylog entries are matched by `cid`.** Sufficient for a normal capture; a
   more robust scheme could match on handshake order or `handshake_hash` if the
   same `cid` were reused within one long capture.
 - **No keylog, no decryption** - by design.
+
+## Regenerating field maps
+
+The named-field tables in `src/02_constants.lua` are generated from the Trezor
+`.proto` definitions and should not be edited by hand. To regenerate after a
+protocol change:
+
+```bash
+# from the trezor-firmware checkout, build a descriptor set
+protoc --descriptor_set_out=/tmp/messages.desc --include_imports \
+       -I common/protob common/protob/*.proto
+
+# then regenerate the Lua tables in place
+python tools/gen_message_fields.py /tmp/messages.desc --inplace
+```
+
+Message-type names are regenerated separately via `tools/gen_message_names.py`.
+After regenerating, rebuild the dissector with `bash build.sh`.
