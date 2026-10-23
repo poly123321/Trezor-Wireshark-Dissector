@@ -1,0 +1,30 @@
+diff --git a/python/src/trezorlib/thp/channel.py b/python/src/trezorlib/thp/channel.py
+index b50000259e..4e4dd19334 100644
+--- a/python/src/trezorlib/thp/channel.py
++++ b/python/src/trezorlib/thp/channel.py
+@@ -308,6 +308,25 @@ class Channel:
+                 self._send_handshake_completion_request(credentials)
+                 self._read_handshake_completion_response()
+                 LOG.info("Handshake completed for channel %04x", self.channel_id)
++                # DEBUG/PROFILING: export THP Noise session keys for this run.
++                # Do not commit real keylogs. They allow decrypting this capture.
++                try:
++                    import os
++                    keylog_path = os.environ.get("THP_KEYLOG")
++                    if keylog_path:
++                        np = self.noise.noise_protocol
++                        enc = np.cipher_state_encrypt
++                        dec = np.cipher_state_decrypt
++                        with open(keylog_path, "a", encoding="utf-8") as f:
++                            f.write(
++                                "THP_KEYLOG "
++                                f"cid=0x{self.channel_id:04x} "
++                                f"encrypt_key={enc.k.hex()} encrypt_nonce={enc.n} "
++                                f"decrypt_key={dec.k.hex()} decrypt_nonce={dec.n} "
++                                f"handshake_hash={self.noise.get_handshake_hash().hex()}\n"
++                            )
++                except Exception as e:
++                    LOG.warning("Failed to write THP keylog: %s", e)
+             except Exception:
+                 # any other failure during handshake will close the channel
+                 self.close()

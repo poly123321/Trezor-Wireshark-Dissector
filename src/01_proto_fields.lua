@@ -21,6 +21,15 @@ local thp = Proto("trezor_dissector", "Trezor Wire Dissector (THP / Codec v1)")
 thp.prefs.udp_ports = Pref.string("Emulator UDP port(s)", "21324",
     "UDP port or range the Trezor emulator(s) use, e.g. 21324 or 21324-21400")
 
+-- Optional THP Noise keylog. Similar to TLS SSLKEYLOGFILE:
+-- without a matching keylog, ENCRYPTED_TRANSPORT stays encrypted.
+-- How to create a keylog (trezorlib patch + capture steps): docs/THP_DECRYPTION.md
+local THP_KEYLOG_DOCS_URL =
+    "https://github.com/poly123321/Trezor-Wireshark-Dissector/blob/main/docs/THP_DECRYPTION.md"
+thp.prefs.thp_keylog_path = Pref.string("THP keylog file", "",
+    "Path to a THP keylog file captured from the same trezorlib session as the PCAP. " ..
+    "How to create one: " .. THP_KEYLOG_DOCS_URL)
+
     -- Basic fields
 local f_control = ProtoField.uint8("trezor_dissector.thp.control", "Control Byte", base.HEX)
 local f_control_name = ProtoField.string("trezor_dissector.thp.control_name", "Control Name")
@@ -56,6 +65,15 @@ local f_handshake_encrypted_trezor_state = ProtoField.bytes("trezor_dissector.th
 -- Encrypted transport fields
 local f_encrypted_payload_len = ProtoField.uint16("trezor_dissector.thp.encrypted.payload_len", "Encrypted Payload Length", base.DEC)
 local f_encrypted_ciphertext = ProtoField.bytes("trezor_dissector.thp.encrypted.ciphertext", "Encrypted Ciphertext")
+local f_encrypted_decrypt_status = ProtoField.string("trezor_dissector.thp.encrypted.decrypt_status", "THP Decryption Status")
+local f_encrypted_decrypt_direction = ProtoField.string("trezor_dissector.thp.encrypted.decrypt_direction", "THP Decrypted Direction")
+local f_encrypted_decrypt_nonce = ProtoField.uint32("trezor_dissector.thp.encrypted.decrypt_nonce", "THP Noise Nonce", base.DEC)
+local f_encrypted_plaintext_len = ProtoField.uint16("trezor_dissector.thp.encrypted.plaintext_len", "Decrypted Plaintext Length", base.DEC)
+local f_encrypted_plaintext = ProtoField.bytes("trezor_dissector.thp.encrypted.plaintext", "Decrypted Plaintext")
+local f_encrypted_session_id = ProtoField.uint8("trezor_dissector.thp.encrypted.session_id", "Decrypted Session ID", base.DEC)
+local f_encrypted_msg_type = ProtoField.uint16("trezor_dissector.thp.encrypted.msg_type", "Decrypted Message Type", base.DEC)
+local f_encrypted_msg_name = ProtoField.string("trezor_dissector.thp.encrypted.msg_name", "Decrypted Message Name")
+local f_encrypted_protobuf_payload = ProtoField.bytes("trezor_dissector.thp.encrypted.protobuf_payload", "Decrypted Protobuf Payload")
 
 -- Synchronization fields
 local f_seq = ProtoField.bool("trezor_dissector.thp.seq", "SEQ Bit")
@@ -118,6 +136,15 @@ thp.fields = {
 
     f_encrypted_payload_len,
     f_encrypted_ciphertext,
+    f_encrypted_decrypt_status,
+    f_encrypted_decrypt_direction,
+    f_encrypted_decrypt_nonce,
+    f_encrypted_plaintext_len,
+    f_encrypted_plaintext,
+    f_encrypted_session_id,
+    f_encrypted_msg_type,
+    f_encrypted_msg_name,
+    f_encrypted_protobuf_payload,
 
     f_seq,
     f_ack,

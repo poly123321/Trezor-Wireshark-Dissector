@@ -19,3 +19,6 @@ codec_v1_dump.txt
 .idea/
 
 # (pcap/pcapng handled above)
+
+# THP session keylogs — contain real session keys, never commit
+*.keylog

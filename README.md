@@ -23,8 +23,12 @@ trezor-wireshark/
 │   ├── 06_dispatch.lua
 │   └── 07_register.lua
 ├── build.sh                     # concatenates src/ → dist/trezor_dissector.lua
+├── docs/
+│   └── THP_DECRYPTION.md        # decrypting THP traffic with a keylog
 ├── tools/
-│   └── gen_message_names.py     # regenerate the message-name map from messages.proto
+│   ├── gen_message_names.py     # regenerate the message-name map from messages.proto
+│   ├── gen_message_fields.py    # regenerate protobuf field/enum maps from a .proto descriptor set
+│   └── trezorlib-thp-keylog.patch  # trezorlib hook that writes a THP keylog (see docs/)
 └── config/
     └── colorfilters             # coloring rules for the Wireshark profile
 ```

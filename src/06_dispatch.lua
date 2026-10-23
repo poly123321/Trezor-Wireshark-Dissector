@@ -169,7 +169,7 @@ function thp.dissector(buffer, pinfo, tree)
                 end
 
                 if info.original_control == ENCRYPTED_TRANSPORT then
-                    add_encrypted_transport_from_hex(subtree, buffer, info.data_hex_without_crc or "")
+                    add_encrypted_transport_from_hex(subtree, buffer, cid, info.data_hex_without_crc or "", pinfo)
                 end
             end
 
@@ -328,7 +328,7 @@ function thp.dissector(buffer, pinfo, tree)
                 end
 
                 if base_control == ENCRYPTED_TRANSPORT then
-                    dissect_encrypted_transport_in_current_packet(subtree, buffer, data_offset, data_crc_len, packet_len)
+                    dissect_encrypted_transport_in_current_packet(subtree, buffer, cid, data_offset, data_crc_len, packet_len, pinfo)
                 end
             end
 
