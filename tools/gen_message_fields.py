@@ -154,12 +154,15 @@ def render(messages, enums) -> str:
     out.append("-- Do not edit by hand; regenerate when the .proto files change.")
     out.append("")
 
-    # enums first
+    # enums first, one value per line so large enums (e.g. MessageType) stay
+    # readable and regenerating after a .proto change gives a line-per-value diff
     out.append("local pb_enums = {")
     for ename in sorted(enums):
         vals = enums[ename]
-        parts = ", ".join(f"[{num}]={lua_str(vals[num])}" for num in sorted(vals))
-        out.append(f"    [{lua_str(ename)}] = {{ {parts} }},")
+        out.append(f"    [{lua_str(ename)}] = {{")
+        for num in sorted(vals):
+            out.append(f"        [{num}] = {lua_str(vals[num])},")
+        out.append("    },")
     out.append("}")
     out.append("")
 
