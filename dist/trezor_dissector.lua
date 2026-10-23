@@ -34,8 +34,12 @@ thp.prefs.udp_ports = Pref.string("Emulator UDP port(s)", "21324",
 
 -- Optional THP Noise keylog. Similar to TLS SSLKEYLOGFILE:
 -- without a matching keylog, ENCRYPTED_TRANSPORT stays encrypted.
+-- How to create a keylog (trezorlib patch + capture steps): docs/THP_DECRYPTION.md
+local THP_KEYLOG_DOCS_URL =
+    "https://github.com/poly123321/Trezor-Wireshark-Dissector/blob/main/docs/THP_DECRYPTION.md"
 thp.prefs.thp_keylog_path = Pref.string("THP keylog file", "",
-    "Path to a THP keylog file captured from the same trezorlib session as the PCAP")
+    "Path to a THP keylog file captured from the same trezorlib session as the PCAP. " ..
+    "How to create one: " .. THP_KEYLOG_DOCS_URL)
 
     -- Basic fields
 local f_control = ProtoField.uint8("trezor_dissector.thp.control", "Control Byte", base.HEX)

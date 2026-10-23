@@ -49,11 +49,35 @@ cp dist/trezor_dissector.lua "$HOME/.config/wireshark/plugins/trezor_dissector.l
 Restart Wireshark. A **THP keylog file** option appears under
 **Preferences -> Protocols -> TREZOR_DISSECTOR**.
 
-## 2. Generate a matching PCAP + keylog
+## 2. Instrument trezorlib to write the keylog
 
-The keylog is written by an instrumented `trezorlib` when the `THP_KEYLOG`
-environment variable is set. Run a capture and the command in parallel:
-`get-features` is a simple choice that produces a short, complete session.
+Stock `trezorlib` does not export session keys. The patch in
+[`tools/trezorlib-thp-keylog.patch`](../tools/trezorlib-thp-keylog.patch) adds
+a hook to `trezorlib/thp/channel.py`: after each successful THP handshake, if
+the `THP_KEYLOG` environment variable is set, it appends one line with that
+channel's keys to the file it names. Without `THP_KEYLOG` nothing changes.
+
+Apply it to a `trezor-firmware` checkout and use `trezorlib` from that checkout
+(an editable install, so `trezorctl` picks up the change):
+
+```bash
+cd trezor-firmware
+git apply /path/to/Trezor-Wireshark-Dissector/tools/trezorlib-thp-keylog.patch
+pip install -e python/   # skip if trezorlib is already installed from python/
+```
+
+The patch was made against `trezor-firmware` commit `a3bc309b63`. If it no
+longer applies, the change is small enough to port by hand: write the line
+right after `Handshake completed for channel ...` is logged in
+`Channel` (see the keylog format under "How it works").
+
+To undo it: `git apply -R` with the same patch.
+
+## 3. Generate a matching PCAP + keylog
+
+With the patched `trezorlib`, set `THP_KEYLOG` and run a capture and the
+command in parallel: `get-features` is a simple choice that produces a short,
+complete session.
 
 List capture interfaces with `tshark -D` and pick the right one for your setup.
 USB interface names differ by platform — for example a USB bus on Linux
@@ -83,7 +107,7 @@ env -u TREZOR_PATH THP_KEYLOG=session.keylog \
 
 This yields a matching `session.pcapng` + `session.keylog` pair.
 
-## 3. Verify with tshark
+## 4. Verify with tshark
 
 ```bash
 tshark \
@@ -100,7 +124,7 @@ tshark \
 Decoded message names appear. Running the same command **without** the `-o`
 keylog option yields none - confirming decryption is keylog-gated.
 
-## 4. Open in the Wireshark GUI
+## 5. Open in the Wireshark GUI
 
 Open the PCAP, set **Preferences -> Protocols -> TREZOR_DISSECTOR -> THP keylog
 file** to the keylog, and re-read the capture. Filter with
