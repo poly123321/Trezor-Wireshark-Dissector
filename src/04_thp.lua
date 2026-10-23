@@ -219,10 +219,13 @@ function reset_thp_decryption_state()
     thp_decrypt_frame_cache = {}
 end
 
+-- Noise AESGCM nonce (Noise spec, "The AESGCM cipher functions"): 32 bits of
+-- zeros followed by the 64-bit big-endian message counter n, i.e. a 12-byte
+-- GCM IV.
+-- GcryptCipher needs Wireshark >= 4.6, which runs Lua 5.3+ with native 64-bit
+-- integers, so %016x formats the full counter directly.
 local function noise_nonce_hex(n)
-    local hi = math.floor(n / 0x100000000)
-    local lo = n % 0x100000000
-    return string.format("00000000%08x%08x", hi, lo)
+    return string.format("00000000%016x", n)
 end
 
 local function load_thp_keylog()
@@ -372,45 +375,45 @@ local function try_decrypt_thp(cid, data_hex, pinfo)
 end
 
 
-local function add_decrypted_thp_message(dec, pt_tvb, plaintext_len, pinfo)
+local function add_decrypted_thp_message(dec, plaintext_buffer, plaintext_len, pinfo)
     -- THP decrypted application frame:
     --   1 byte session/id prefix
     --   2 bytes MessageType, big-endian
     --   N bytes protobuf payload
     if plaintext_len < 3 then
-        dec:add(pt_tvb(0, plaintext_len), "Decrypted THP message: too short to parse"):set_generated()
+        dec:add(plaintext_buffer(0, plaintext_len), "Decrypted THP message: too short to parse"):set_generated()
         return
     end
 
-    local session_id = pt_tvb(0, 1):uint()
-    local msg_type = pt_tvb(1, 2):uint()
+    local session_id = plaintext_buffer(0, 1):uint()
+    local msg_type = plaintext_buffer(1, 2):uint()
     local msg_name = v1_message_name(msg_type)
     local payload_len = plaintext_len - 3
 
-    dec:add(f_encrypted_session_id, pt_tvb(0, 1))
-    dec:add(f_encrypted_msg_type, pt_tvb(1, 2))
-    dec:add(f_encrypted_msg_name, pt_tvb(1, 2), msg_name):set_generated()
+    dec:add(f_encrypted_session_id, plaintext_buffer(0, 1))
+    dec:add(f_encrypted_msg_type, plaintext_buffer(1, 2))
+    dec:add(f_encrypted_msg_name, plaintext_buffer(1, 2), msg_name):set_generated()
 
     if payload_len > 0 then
-        local pb_tree = dec:add(f_encrypted_protobuf_payload, pt_tvb(3, payload_len))
+        local pb_tree = dec:add(f_encrypted_protobuf_payload, plaintext_buffer(3, payload_len))
         -- Parse the protobuf payload into named fields using the generated
         -- pb_message_fields / pb_enums tables. Nested messages are shown as
         -- indented subtrees (depth-limited inside pb_format_message).
         local ok, lines = pcall(function()
-            local raw = range_to_raw(pt_tvb, 3, payload_len)
+            local raw = range_to_raw(plaintext_buffer, 3, payload_len)
             return pb_format_message(msg_name, raw)
         end)
         if ok and lines then
             local stack = { [0] = pb_tree }
             for _, ln in ipairs(lines) do
                 local parent = stack[ln.depth] or pb_tree
-                local node = parent:add(pt_tvb(3, payload_len), ln.text)
+                local node = parent:add(plaintext_buffer(3, payload_len), ln.text)
                 node:set_generated()
                 stack[ln.depth + 1] = node
             end
         end
     else
-        dec:add(pt_tvb(0, 0), "Decrypted Protobuf Payload: empty"):set_generated()
+        dec:add(plaintext_buffer(0, 0), "Decrypted Protobuf Payload: empty"):set_generated()
     end
 
     pinfo.cols.info:append(string.format(" -> %s", msg_name))
@@ -440,10 +443,15 @@ local function add_thp_decryption(subtree, buffer, cid, data_hex, pinfo)
     dec:add(f_encrypted_plaintext_len, buffer(0, 0), plaintext_len)
 
     if plaintext_len > 0 then
-        local pt_tvb = res.plaintext:tvb("THP decrypted plaintext")
-        dec:add(f_encrypted_plaintext, pt_tvb(0, pt_tvb:len()))
+        -- Wrap the decrypted bytes (a ByteArray) in a new Tvb ("testy virtual
+        -- buffer", Wireshark's packet-data buffer, the same type as `buffer`).
+        -- It shows up as a separate "THP decrypted plaintext" tab in the
+        -- packet bytes pane, so the fields added below highlight the plaintext
+        -- bytes they were parsed from rather than the ciphertext.
+        local plaintext_buffer = res.plaintext:tvb("THP decrypted plaintext")
+        dec:add(f_encrypted_plaintext, plaintext_buffer(0, plaintext_buffer:len()))
         dec:add(buffer(0, 0), "Decrypted Plaintext Hex: " .. plaintext_hex)
-        add_decrypted_thp_message(dec, pt_tvb, plaintext_len, pinfo)
+        add_decrypted_thp_message(dec, plaintext_buffer, plaintext_len, pinfo)
     else
         dec:add(buffer(0, 0), "Decrypted Plaintext: empty")
     end

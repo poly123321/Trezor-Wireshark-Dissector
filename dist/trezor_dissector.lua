@@ -3821,6 +3821,41 @@ local PAIRING_METHOD_NAMES = {
     [4] = "NFC",
 }
 
+-- ----------------------------------------------------------------------
+-- Minimal protobuf wire-format reader.
+-- See https://protobuf.dev/programming-guides/encoding/
+--
+-- A serialized message is a sequence of fields, each one:
+--   tag   varint = (field_number << 3) | wire_type
+--   value encoded according to wire_type:
+-- ----------------------------------------------------------------------
+
+-- int32/int64/uint32/uint64/sint32/sint64/bool/enum: one varint
+local PB_WIRE_VARINT = 0
+-- fixed64/sfixed64/double: 8 bytes, little-endian
+local PB_WIRE_I64 = 1
+-- string/bytes/nested message/packed repeated: varint byte length, then the bytes
+local PB_WIRE_LEN = 2
+-- fixed32/sfixed32/float: 4 bytes, little-endian
+local PB_WIRE_I32 = 5
+-- (wire types 3 and 4 are the deprecated proto2 groups; Trezor protos don't use them)
+
+local PB_I64_SIZE = 8
+local PB_I32_SIZE = 4
+
+-- Varints store 7 value bits per byte, least significant group first. The
+-- high bit is set on every byte except the last, so for a byte b:
+-- b % 0x80 is its value bits, and b < 0x80 means it ends the varint.
+local PB_VARINT_CONT_BIT = 0x80
+local PB_VARINT_GROUP_BITS = 7
+local PB_VARINT_MAX_SHIFT = 63   -- a varint encodes at most 64 bits (10 bytes)
+
+-- Split a field tag into (field_number, wire_type).
+local PB_WIRE_TYPE_RANGE = 8     -- 2^3: wire type occupies the low 3 bits
+local function pb_split_tag(tag)
+    return math.floor(tag / PB_WIRE_TYPE_RANGE), tag % PB_WIRE_TYPE_RANGE
+end
+
 -- Read a base-128 varint from byte-string `s` at 1-based index `i`.
 -- Returns value (integer), next_index.
 local function pb_read_varint(s, i)
@@ -3829,13 +3864,20 @@ local function pb_read_varint(s, i)
     while i <= #s do
         local b = string.byte(s, i)
         i = i + 1
-        result = result + (b % 128) * (2 ^ shift)
-        if b < 128 then return math.floor(result), i end
-        shift = shift + 7
-        if shift > 63 then return math.floor(result), i end
+        result = result + (b % PB_VARINT_CONT_BIT) * (2 ^ shift)
+        if b < PB_VARINT_CONT_BIT then return math.floor(result), i end
+        shift = shift + PB_VARINT_GROUP_BITS
+        if shift > PB_VARINT_MAX_SHIFT then return math.floor(result), i end
     end
     return math.floor(result), i
 end
+
+-- Field numbers of ThpDeviceProperties (common/protob/messages-thp.proto).
+local THP_DEVPROP_INTERNAL_MODEL = 1          -- string, e.g. "T3W1"
+local THP_DEVPROP_MODEL_VARIANT = 2           -- uint32 (device color etc.)
+local THP_DEVPROP_PROTOCOL_VERSION_MAJOR = 3  -- uint32
+local THP_DEVPROP_PROTOCOL_VERSION_MINOR = 4  -- uint32
+local THP_DEVPROP_PAIRING_METHODS = 5         -- repeated ThpPairingMethod enum
 
 -- Parse a serialized ThpDeviceProperties protobuf (from ChannelAllocationResponse).
 -- Returns a table: internal_model, model_variant, protocol_version_major/minor,
@@ -3846,23 +3888,24 @@ local function parse_device_properties(s)
     while i <= #s do
         local tag
         tag, i = pb_read_varint(s, i)
-        local field_no = math.floor(tag / 8)
-        local wire_type = tag % 8
-        if wire_type == 0 then
+        local field_no, wire_type = pb_split_tag(tag)
+        if wire_type == PB_WIRE_VARINT then
             local v
             v, i = pb_read_varint(s, i)
-            if field_no == 2 then out.model_variant = v
-            elseif field_no == 3 then out.protocol_version_major = v
-            elseif field_no == 4 then out.protocol_version_minor = v
-            elseif field_no == 5 then out.pairing_methods[#out.pairing_methods + 1] = v
+            if field_no == THP_DEVPROP_MODEL_VARIANT then out.model_variant = v
+            elseif field_no == THP_DEVPROP_PROTOCOL_VERSION_MAJOR then out.protocol_version_major = v
+            elseif field_no == THP_DEVPROP_PROTOCOL_VERSION_MINOR then out.protocol_version_minor = v
+            -- unpacked repeated enum: one varint per element
+            elseif field_no == THP_DEVPROP_PAIRING_METHODS then out.pairing_methods[#out.pairing_methods + 1] = v
             else out.warnings[#out.warnings + 1] = string.format("unknown varint field %d", field_no) end
-        elseif wire_type == 2 then
+        elseif wire_type == PB_WIRE_LEN then
             local len
             len, i = pb_read_varint(s, i)
             local chunk = string.sub(s, i, i + len - 1)
             i = i + len
-            if field_no == 1 then out.internal_model = chunk
-            elseif field_no == 5 then
+            if field_no == THP_DEVPROP_INTERNAL_MODEL then out.internal_model = chunk
+            -- packed repeated enum: all elements as consecutive varints in one chunk
+            elseif field_no == THP_DEVPROP_PAIRING_METHODS then
                 local j = 1
                 while j <= #chunk do
                     local v; v, j = pb_read_varint(chunk, j)
@@ -3886,31 +3929,43 @@ end
 -- ======================================================================
 
 local PB_MAX_DEPTH = 6
+-- Non-printable bytes fields up to this length are shown in full as hex;
+-- longer ones are truncated to a PB_HEX_PREVIEW_LEN-byte preview.
+local PB_HEX_FULL_MAX_LEN = 32
+local PB_HEX_PREVIEW_LEN = 16
 
+-- Split serialized protobuf `s` into a flat list of raw fields, without any
+-- schema. Each entry has field_no, wire_type and the undecoded value:
+--   PB_WIRE_VARINT -> varint (number)
+--   PB_WIRE_LEN    -> chunk (raw bytes), len
+--   PB_WIRE_I64    -> chunk (8 raw bytes), len
+--   PB_WIRE_I32    -> chunk (4 raw bytes), len
+-- Stops at the first unsupported wire type, since its length is unknown.
 local function pb_parse_fields(s)
     local fields = {}
     local i = 1
     while i <= #s do
         local tag
         tag, i = pb_read_varint(s, i)
-        local field_no = math.floor(tag / 8)
-        local wire_type = tag % 8
-        if wire_type == 0 then
+        local field_no, wire_type = pb_split_tag(tag)
+        if wire_type == PB_WIRE_VARINT then
             local v
             v, i = pb_read_varint(s, i)
-            fields[#fields + 1] = { field_no = field_no, wire_type = 0, varint = v }
-        elseif wire_type == 2 then
+            fields[#fields + 1] = { field_no = field_no, wire_type = wire_type, varint = v }
+        elseif wire_type == PB_WIRE_LEN then
             local len
             len, i = pb_read_varint(s, i)
             local chunk = string.sub(s, i, i + len - 1)
             i = i + len
-            fields[#fields + 1] = { field_no = field_no, wire_type = 2, chunk = chunk, len = len }
-        elseif wire_type == 1 then
-            fields[#fields + 1] = { field_no = field_no, wire_type = 1, chunk = string.sub(s, i, i + 7), len = 8 }
-            i = i + 8
-        elseif wire_type == 5 then
-            fields[#fields + 1] = { field_no = field_no, wire_type = 5, chunk = string.sub(s, i, i + 3), len = 4 }
-            i = i + 4
+            fields[#fields + 1] = { field_no = field_no, wire_type = wire_type, chunk = chunk, len = len }
+        elseif wire_type == PB_WIRE_I64 then
+            local chunk = string.sub(s, i, i + PB_I64_SIZE - 1)
+            fields[#fields + 1] = { field_no = field_no, wire_type = wire_type, chunk = chunk, len = PB_I64_SIZE }
+            i = i + PB_I64_SIZE
+        elseif wire_type == PB_WIRE_I32 then
+            local chunk = string.sub(s, i, i + PB_I32_SIZE - 1)
+            fields[#fields + 1] = { field_no = field_no, wire_type = wire_type, chunk = chunk, len = PB_I32_SIZE }
+            i = i + PB_I32_SIZE
         else
             fields[#fields + 1] = { field_no = field_no, wire_type = wire_type, unsupported = true }
             break
@@ -3954,23 +4009,26 @@ local function pb_format_into(out, msg_name, s, depth)
         else
             local meta = fieldmap and fieldmap[f.field_no] or nil
             local fname = meta and meta.name or string.format("field %d", f.field_no)
-            if f.wire_type == 0 then
+            if f.wire_type == PB_WIRE_VARINT then
                 local enum_name = meta and meta.enum or nil
                 out[#out + 1] = { text = string.format("%s: %s", fname, pb_format_varint(f.varint, enum_name)), depth = depth }
-            elseif f.wire_type == 2 then
+            elseif f.wire_type == PB_WIRE_LEN then
+                -- Length-delimited: a nested message if the schema says so,
+                -- otherwise a string (if printable) or raw bytes.
                 if meta and meta.msg and pb_message_fields[meta.msg] then
                     out[#out + 1] = { text = string.format("%s: (%s)", fname, meta.msg), depth = depth }
                     pb_format_into(out, meta.msg, f.chunk, depth + 1)
                 elseif pb_printable(f.chunk) then
                     out[#out + 1] = { text = string.format("%s: \"%s\"", fname, f.chunk), depth = depth }
-                elseif f.len <= 32 then
+                elseif f.len <= PB_HEX_FULL_MAX_LEN then
                     out[#out + 1] = { text = string.format("%s: %s", fname, pb_hex(f.chunk)), depth = depth }
                 else
-                    out[#out + 1] = { text = string.format("%s: bytes[%d] %s...", fname, f.len, pb_hex(string.sub(f.chunk, 1, 16))), depth = depth }
+                    local preview = pb_hex(string.sub(f.chunk, 1, PB_HEX_PREVIEW_LEN))
+                    out[#out + 1] = { text = string.format("%s: bytes[%d] %s...", fname, f.len, preview), depth = depth }
                 end
-            elseif f.wire_type == 1 then
+            elseif f.wire_type == PB_WIRE_I64 then
                 out[#out + 1] = { text = string.format("%s: fixed64 %s", fname, pb_hex(f.chunk)), depth = depth }
-            elseif f.wire_type == 5 then
+            elseif f.wire_type == PB_WIRE_I32 then
                 out[#out + 1] = { text = string.format("%s: fixed32 %s", fname, pb_hex(f.chunk)), depth = depth }
             end
         end
@@ -4216,10 +4274,13 @@ function reset_thp_decryption_state()
     thp_decrypt_frame_cache = {}
 end
 
+-- Noise AESGCM nonce (Noise spec, "The AESGCM cipher functions"): 32 bits of
+-- zeros followed by the 64-bit big-endian message counter n, i.e. a 12-byte
+-- GCM IV.
+-- GcryptCipher needs Wireshark >= 4.6, which runs Lua 5.3+ with native 64-bit
+-- integers, so %016x formats the full counter directly.
 local function noise_nonce_hex(n)
-    local hi = math.floor(n / 0x100000000)
-    local lo = n % 0x100000000
-    return string.format("00000000%08x%08x", hi, lo)
+    return string.format("00000000%016x", n)
 end
 
 local function load_thp_keylog()
@@ -4369,45 +4430,45 @@ local function try_decrypt_thp(cid, data_hex, pinfo)
 end
 
 
-local function add_decrypted_thp_message(dec, pt_tvb, plaintext_len, pinfo)
+local function add_decrypted_thp_message(dec, plaintext_buffer, plaintext_len, pinfo)
     -- THP decrypted application frame:
     --   1 byte session/id prefix
     --   2 bytes MessageType, big-endian
     --   N bytes protobuf payload
     if plaintext_len < 3 then
-        dec:add(pt_tvb(0, plaintext_len), "Decrypted THP message: too short to parse"):set_generated()
+        dec:add(plaintext_buffer(0, plaintext_len), "Decrypted THP message: too short to parse"):set_generated()
         return
     end
 
-    local session_id = pt_tvb(0, 1):uint()
-    local msg_type = pt_tvb(1, 2):uint()
+    local session_id = plaintext_buffer(0, 1):uint()
+    local msg_type = plaintext_buffer(1, 2):uint()
     local msg_name = v1_message_name(msg_type)
     local payload_len = plaintext_len - 3
 
-    dec:add(f_encrypted_session_id, pt_tvb(0, 1))
-    dec:add(f_encrypted_msg_type, pt_tvb(1, 2))
-    dec:add(f_encrypted_msg_name, pt_tvb(1, 2), msg_name):set_generated()
+    dec:add(f_encrypted_session_id, plaintext_buffer(0, 1))
+    dec:add(f_encrypted_msg_type, plaintext_buffer(1, 2))
+    dec:add(f_encrypted_msg_name, plaintext_buffer(1, 2), msg_name):set_generated()
 
     if payload_len > 0 then
-        local pb_tree = dec:add(f_encrypted_protobuf_payload, pt_tvb(3, payload_len))
+        local pb_tree = dec:add(f_encrypted_protobuf_payload, plaintext_buffer(3, payload_len))
         -- Parse the protobuf payload into named fields using the generated
         -- pb_message_fields / pb_enums tables. Nested messages are shown as
         -- indented subtrees (depth-limited inside pb_format_message).
         local ok, lines = pcall(function()
-            local raw = range_to_raw(pt_tvb, 3, payload_len)
+            local raw = range_to_raw(plaintext_buffer, 3, payload_len)
             return pb_format_message(msg_name, raw)
         end)
         if ok and lines then
             local stack = { [0] = pb_tree }
             for _, ln in ipairs(lines) do
                 local parent = stack[ln.depth] or pb_tree
-                local node = parent:add(pt_tvb(3, payload_len), ln.text)
+                local node = parent:add(plaintext_buffer(3, payload_len), ln.text)
                 node:set_generated()
                 stack[ln.depth + 1] = node
             end
         end
     else
-        dec:add(pt_tvb(0, 0), "Decrypted Protobuf Payload: empty"):set_generated()
+        dec:add(plaintext_buffer(0, 0), "Decrypted Protobuf Payload: empty"):set_generated()
     end
 
     pinfo.cols.info:append(string.format(" -> %s", msg_name))
@@ -4437,10 +4498,15 @@ local function add_thp_decryption(subtree, buffer, cid, data_hex, pinfo)
     dec:add(f_encrypted_plaintext_len, buffer(0, 0), plaintext_len)
 
     if plaintext_len > 0 then
-        local pt_tvb = res.plaintext:tvb("THP decrypted plaintext")
-        dec:add(f_encrypted_plaintext, pt_tvb(0, pt_tvb:len()))
+        -- Wrap the decrypted bytes (a ByteArray) in a new Tvb ("testy virtual
+        -- buffer", Wireshark's packet-data buffer, the same type as `buffer`).
+        -- It shows up as a separate "THP decrypted plaintext" tab in the
+        -- packet bytes pane, so the fields added below highlight the plaintext
+        -- bytes they were parsed from rather than the ciphertext.
+        local plaintext_buffer = res.plaintext:tvb("THP decrypted plaintext")
+        dec:add(f_encrypted_plaintext, plaintext_buffer(0, plaintext_buffer:len()))
         dec:add(buffer(0, 0), "Decrypted Plaintext Hex: " .. plaintext_hex)
-        add_decrypted_thp_message(dec, pt_tvb, plaintext_len, pinfo)
+        add_decrypted_thp_message(dec, plaintext_buffer, plaintext_len, pinfo)
     else
         dec:add(buffer(0, 0), "Decrypted Plaintext: empty")
     end
